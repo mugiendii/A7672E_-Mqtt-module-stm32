@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://api.github.com/repos/mugiendii/LilyGo-Modem-Series/contents/examples\")",
+      "Bash(python3 -c \"import sys,json; [print\\(f[''''name''''], f[''''type'''']\\) for f in json.load\\(sys.stdin\\)]\")",
+      "Bash(curl -s \"https://api.github.com/repos/mugiendii/A7670E_-Mqtt-Lilygo-module/contents/src\")",
+      "Bash(python3 -c \"import sys,json; [print\\(f[''''name''''], f[''''type''''], f.get\\(''''download_url'''',''''''''\\)\\) for f in json.load\\(sys.stdin\\)]\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/mugiendii/A7670E_-Mqtt-Lilygo-module/main/src/main.cpp\")",
+      "Bash(curl -s \"https://api.github.com/repos/mugiendii/LilyGo-Modem-Series/contents/examples/MqttsBuiltlnNoSSL\")",
+      "Bash(python3 -c \"import sys,json; [print\\(f[''''name''''], f.get\\(''''download_url'''',''''''''\\)\\) for f in json.load\\(sys.stdin\\)]\")",
+      "Bash(curl -s \"https://api.github.com/repos/mugiendii/A7670E_-Mqtt-Lilygo-module/contents/lib/SmsManager\")",
+      "Bash(curl -s https://raw.githubusercontent.com/mugiendii/LilyGo-Modem-Series/main/examples/Network/Network.ino)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ]
+  }
+}
