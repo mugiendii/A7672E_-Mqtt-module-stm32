@@ -164,6 +164,10 @@ int main(void)
       .will_retain  = 1,
   };
 
+  /* Network configuration */
+  static const char *A7672E_PIN = "";  /* Set to your SIM PIN if required, e.g. "1234"; leave empty if not needed */
+  static const char *A7672E_APN = "internet";  /* APN for your SIM provider */
+
   /* Topics — also referenced in the main loop */
   #define TOPIC_TRANSACTIONS  "mpesa/transactions"
   #define TOPIC_HEARTBEAT     "device/heartbeat"
@@ -194,9 +198,9 @@ int main(void)
   }
   printf("TLS cert OK\r\n");
 
-  /* ── Network registration (APN: internet) ──────────────────────────── */
+  /* ── Network registration ──────────────────────────── */
   printf("Registering on network...\r\n");
-  A7672E_Status_t net_st = A7672E_InitNetwork("internet");
+  A7672E_Status_t net_st = A7672E_InitNetwork(A7672E_PIN, A7672E_APN);
   if (net_st != A7672E_OK) {
       const char *reason = (net_st == A7672E_NO_SIM) ? "no SIM / SIM removed" :
                            (net_st == A7672E_NO_NET) ? "registration timeout"  :

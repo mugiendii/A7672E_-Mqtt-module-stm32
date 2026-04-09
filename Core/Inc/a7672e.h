@@ -132,11 +132,12 @@ void A7672E_PowerOn(void);
 A7672E_Status_t A7672E_WaitReady(uint32_t timeout_ms);
 
 /**
- * @brief Full network init: SIM check → LTE registration → APN → PDP activate.
+ * @brief Full network init: SIM check → PIN unlock (if needed) → LTE registration → APN → PDP activate.
+ * @param pin  SIM PIN string (NULL or empty to skip PIN entry)
  * @param apn  APN string for your SIM (e.g. "internet", "iot.1nce.net")
  * @return A7672E_OK, A7672E_NO_SIM, A7672E_NO_NET, or A7672E_ERR
  */
-A7672E_Status_t A7672E_InitNetwork(const char *apn);
+A7672E_Status_t A7672E_InitNetwork(const char *pin, const char *apn);
 
 /**
  * @brief Upload a PEM CA certificate to the modem filesystem and configure

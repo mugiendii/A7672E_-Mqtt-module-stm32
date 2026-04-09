@@ -269,7 +269,7 @@ A7672E_Status_t A7672E_WaitReady(uint32_t timeout_ms)
     return A7672E_TIMEOUT;
 }
 
-A7672E_Status_t A7672E_InitNetwork(const char *apn)
+A7672E_Status_t A7672E_InitNetwork(const char *pin, const char *apn)
 {
     char cmd[80];
     char resp[64];
@@ -278,8 +278,17 @@ A7672E_Status_t A7672E_InitNetwork(const char *apn)
     resp[0] = '\0';
     modem_cmd("AT+CPIN?", "CPIN:", 5000, resp, sizeof(resp));
     printf("[NET] CPIN: %s", resp);
-    if (!strstr(resp, "+CPIN: READY") && !strstr(resp, "+CPIN: SIM PIN"))
+    if (strstr(resp, "+CPIN: SIM PIN")) {
+        if (pin && pin[0] != '\0') {
+            snprintf(cmd, sizeof(cmd), "AT+CPIN=\"%s\"", pin);
+            if (modem_cmd(cmd, "OK", 5000, NULL, 0) != A7672E_OK)
+                return A7672E_ERR;
+        } else {
+            return A7672E_NO_SIM;
+        }
+    } else if (!strstr(resp, "+CPIN: READY")) {
         return A7672E_NO_SIM;
+    }
 
     /* 2 — Set full functionality */
     if (modem_cmd("AT+CFUN=1", "OK", 3000, NULL, 0) != A7672E_OK)
