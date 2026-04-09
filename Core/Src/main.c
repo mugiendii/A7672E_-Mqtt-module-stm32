@@ -164,9 +164,9 @@ int main(void)
       .will_retain  = 1,
   };
 
-  /* Network configuration */
-  static const char *A7672E_PIN = "";  /* Set to your SIM PIN if required, e.g. "1234"; leave empty if not needed */
-  static const char *A7672E_APN = "internet";  /* APN for your SIM provider */
+  /* Network configuration — from your ESP32 implementation */
+  static const char *A7672E_PIN = "3759";        /* Your Safaricom SIM PIN */
+  static const char *A7672E_APN = "safaricom";   /* Safaricom APN */
 
   /* Topics — also referenced in the main loop */
   #define TOPIC_TRANSACTIONS  "mpesa/transactions"

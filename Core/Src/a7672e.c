@@ -334,24 +334,37 @@ A7672E_Status_t A7672E_TlsUploadCert(const char *pem, uint16_t pem_len)
 {
     char cmd[48];
 
+    printf("[TLS] Deleting old cert...\r\n");
     /* Delete any existing file (ignore error if not found) */
     modem_cmd("AT+CCERTDELE=\"cacert.pem\"", "OK", 3000, NULL, 0);
 
+    printf("[TLS] Uploading PEM (%d bytes)...\r\n", pem_len);
     /* Download PEM to modem filesystem */
     snprintf(cmd, sizeof(cmd), "AT+CCERTDOWN=\"cacert.pem\",%d", (int)pem_len);
     modem_send(cmd);
-    if (modem_wait_prompt(pem, pem_len, 10000) != A7672E_OK) return A7672E_ERR;
-    if (modem_cmd(NULL, "OK", 5000, NULL, 0)   != A7672E_OK) return A7672E_ERR;
+    if (modem_wait_prompt(pem, pem_len, 10000) != A7672E_OK) {
+        printf("[TLS] ERROR: Cert upload timeout\r\n");
+        return A7672E_ERR;
+    }
+    if (modem_cmd(NULL, "OK", 5000, NULL, 0) != A7672E_OK) {
+        printf("[TLS] ERROR: Cert upload failed\r\n");
+        return A7672E_ERR;
+    }
+    printf("[TLS] Cert uploaded successfully\r\n");
 
+    printf("[TLS] Binding cert to SSL context 0...\r\n");
     /* Bind CA cert to SSL context 0 */
     modem_cmd("AT+CSSLCFG=\"cacert\",0,\"cacert.pem\"", "OK", 3000, NULL, 0);
 
+    printf("[TLS] Setting auth mode...\r\n");
     /* Verify server certificate */
     modem_cmd("AT+CSSLCFG=\"authmode\",0,1", "OK", 2000, NULL, 0);
 
+    printf("[TLS] Enabling SNI...\r\n");
     /* Enable SNI — required by HiveMQ Cloud */
     modem_cmd("AT+CSSLCFG=\"enableSNI\",0,1", "OK", 2000, NULL, 0);
 
+    printf("[TLS] TLS setup complete\r\n");
     return A7672E_OK;
 }
 
@@ -359,26 +372,35 @@ A7672E_Status_t A7672E_MqttConnect(const A7672E_MqttConfig_t *cfg)
 {
     char cmd[180];
 
+    printf("[MQTT] Tearing down any stale session...\r\n");
     /* Tear down any stale session */
     modem_cmd("AT+CMQTTDISC=0,10", "OK", 3000, NULL, 0);
     modem_cmd("AT+CMQTTREL=0",     "OK", 1000, NULL, 0);
     modem_cmd("AT+CMQTTSTOP",      "OK", 3000, NULL, 0);
 
+    printf("[MQTT] Starting MQTT service...\r\n");
     /* Start MQTT service */
-    if (modem_cmd("AT+CMQTTSTART", "OK", 5000, NULL, 0) != A7672E_OK)
+    if (modem_cmd("AT+CMQTTSTART", "OK", 5000, NULL, 0) != A7672E_OK) {
+        printf("[MQTT] ERROR: CMQTTSTART failed\r\n");
         return A7672E_ERR;
+    }
 
+    printf("[MQTT] Acquiring client session...\r\n");
     /* Acquire client session 0 */
     snprintf(cmd, sizeof(cmd), "AT+CMQTTACCQ=0,\"%s\",%d",
              cfg->client_id, (int)cfg->use_ssl);
-    if (modem_cmd(cmd, "OK", 3000, NULL, 0) != A7672E_OK)
+    if (modem_cmd(cmd, "OK", 3000, NULL, 0) != A7672E_OK) {
+        printf("[MQTT] ERROR: CMQTTACCQ failed\r\n");
         return A7672E_ERR;
+    }
 
+    printf("[MQTT] Setting MQTT version...\r\n");
     /* Use MQTT 3.1.1 */
     modem_cmd("AT+CMQTTCFG=\"version\",0,4", "OK", 2000, NULL, 0);
 
     /* Optional last-will message */
     if (cfg->will_topic[0] != '\0') {
+        printf("[MQTT] Setting last-will message...\r\n");
         snprintf(cmd, sizeof(cmd),
                  "AT+CMQTTWILL=0,\"%s\",%d,%d,\"%s\"",
                  cfg->will_topic, (int)cfg->will_qos,
@@ -386,14 +408,22 @@ A7672E_Status_t A7672E_MqttConnect(const A7672E_MqttConfig_t *cfg)
         modem_cmd(cmd, "OK", 3000, NULL, 0);
     }
 
+    printf("[MQTT] Connecting to %s:%d (use_ssl=%d)...\r\n",
+           cfg->broker, cfg->port, cfg->use_ssl);
     /* Connect — wait up to 30 s for +CMQTTCONNECT: 0,0 */
+    /* For TLS: use "tls://" scheme and port 8883, with SSL context 0 */
     snprintf(cmd, sizeof(cmd),
-             "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",60,1,\"%s\",\"%s\"",
+             "AT+CMQTTCONNECT=0,\"%s://%s:%d\",60,1,\"%s\",\"%s\"",
+             cfg->use_ssl ? "tls" : "tcp",
              cfg->broker, (int)cfg->port, cfg->username, cfg->password);
 
-    if (modem_cmd(cmd, "+CMQTTCONNECT: 0,0", 30000, NULL, 0) != A7672E_OK)
+    printf("[MQTT] Sending: %s\r\n", cmd);
+    if (modem_cmd(cmd, "+CMQTTCONNECT: 0,0", 30000, NULL, 0) != A7672E_OK) {
+        printf("[MQTT] ERROR: Connection command failed or timed out\r\n");
         return A7672E_ERR;
+    }
 
+    printf("[MQTT] Successfully connected!\r\n");
     return A7672E_OK;
 }
 
