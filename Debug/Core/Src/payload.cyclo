@@ -1,0 +1,4 @@
+../Core/Src/payload.c:12:12:append_str_field	4
+../Core/Src/payload.c:24:10:Payload_BuildTransaction	6
+../Core/Src/payload.c:54:10:Payload_BuildHeartbeat	3
+../Core/Src/payload.c:60:10:Payload_BuildStatus	4
