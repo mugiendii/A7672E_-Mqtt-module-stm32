@@ -275,7 +275,10 @@ A7672E_Status_t A7672E_InitNetwork(const char *apn)
     char resp[64];
 
     /* 1 — SIM present and unlocked? */
-    if (modem_cmd("AT+CPIN?", "READY", 5000, NULL, 0) != A7672E_OK)
+    resp[0] = '\0';
+    modem_cmd("AT+CPIN?", "CPIN:", 5000, resp, sizeof(resp));
+    printf("[NET] CPIN: %s", resp);
+    if (!strstr(resp, "READY"))
         return A7672E_NO_SIM;
 
     /* 2 — Wait for LTE EPS registration (stat = 1 home, 5 roaming) */
@@ -283,6 +286,7 @@ A7672E_Status_t A7672E_InitNetwork(const char *apn)
     while ((HAL_GetTick() - t0) < 60000u) {
         resp[0] = '\0';
         modem_cmd("AT+CEREG?", "+CEREG:", 2000, resp, sizeof(resp));
+        printf("[NET] CEREG: %s", resp);
         if (strstr(resp, ",1") || strstr(resp, ",5")) goto reg_ok;
         HAL_Delay(2000);
     }
@@ -293,8 +297,14 @@ reg_ok:
     snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"IP\",\"%s\"", apn);
     modem_cmd(cmd, "OK", 3000, NULL, 0);
 
-    if (modem_cmd("AT+CGACT=1,1", "OK", 10000, NULL, 0) != A7672E_OK)
+    printf("[NET] Activating PDP context...\r\n");
+    if (modem_cmd("AT+CGACT=1,1", "OK", 15000, NULL, 0) != A7672E_OK)
         return A7672E_ERR;
+
+    /* Confirm IP assigned */
+    resp[0] = '\0';
+    modem_cmd("AT+CGPADDR=1", "+CGPADDR:", 3000, resp, sizeof(resp));
+    printf("[NET] IP: %s", resp);
 
     return A7672E_OK;
 }

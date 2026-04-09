@@ -196,8 +196,12 @@ int main(void)
 
   /* ── Network registration (APN: safaricom) ──────────────────────────── */
   printf("Registering on network...\r\n");
-  if (A7672E_InitNetwork("safaricom") != A7672E_OK) {
-      printf("ERROR: network init failed\r\n");
+  A7672E_Status_t net_st = A7672E_InitNetwork("safaricom");
+  if (net_st != A7672E_OK) {
+      const char *reason = (net_st == A7672E_NO_SIM) ? "no SIM / SIM removed" :
+                           (net_st == A7672E_NO_NET) ? "registration timeout"  :
+                                                       "PDP activation failed";
+      printf("ERROR: network init failed — %s\r\n", reason);
       Error_Handler();
   }
   printf("Network ready\r\n");
