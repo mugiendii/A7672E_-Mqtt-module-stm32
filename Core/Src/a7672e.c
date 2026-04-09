@@ -278,22 +278,30 @@ A7672E_Status_t A7672E_InitNetwork(const char *apn)
     resp[0] = '\0';
     modem_cmd("AT+CPIN?", "CPIN:", 5000, resp, sizeof(resp));
     printf("[NET] CPIN: %s", resp);
-    if (!strstr(resp, "READY"))
+    if (!strstr(resp, "+CPIN: READY") && !strstr(resp, "+CPIN: SIM PIN"))
         return A7672E_NO_SIM;
 
-    /* 2 — Wait for LTE EPS registration (stat = 1 home, 5 roaming) */
+    /* 2 — Set full functionality */
+    if (modem_cmd("AT+CFUN=1", "OK", 3000, NULL, 0) != A7672E_OK)
+        return A7672E_ERR;
+
+    /* 3 — Wait for LTE EPS registration (stat = 1 home, 5 roaming) */
     uint32_t t0 = HAL_GetTick();
     while ((HAL_GetTick() - t0) < 60000u) {
         resp[0] = '\0';
-        modem_cmd("AT+CEREG?", "+CEREG:", 2000, resp, sizeof(resp));
-        printf("[NET] CEREG: %s", resp);
+        modem_cmd("AT+CREG?", "+CREG:", 2000, resp, sizeof(resp));
+        printf("[NET] CREG: %s", resp);
         if (strstr(resp, ",1") || strstr(resp, ",5")) goto reg_ok;
         HAL_Delay(2000);
     }
     return A7672E_NO_NET;
 
 reg_ok:
-    /* 3 — Set APN and activate PDP context 1 */
+    /* 4 — Attach to GPRS */
+    if (modem_cmd("AT+CGATT=1", "OK", 3000, NULL, 0) != A7672E_OK)
+        return A7672E_ERR;
+
+    /* 5 — Set APN and activate PDP context 1 */
     snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"IP\",\"%s\"", apn);
     modem_cmd(cmd, "OK", 3000, NULL, 0);
 
@@ -305,6 +313,10 @@ reg_ok:
     resp[0] = '\0';
     modem_cmd("AT+CGPADDR=1", "+CGPADDR:", 3000, resp, sizeof(resp));
     printf("[NET] IP: %s", resp);
+
+    /* 6 — Configure SMS format and notifications */
+    modem_cmd("AT+CMGF=1", "OK", 2000, NULL, 0);
+    modem_cmd("AT+CNMI=2,1,0,0,0", "OK", 2000, NULL, 0);
 
     return A7672E_OK;
 }

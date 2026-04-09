@@ -194,9 +194,9 @@ int main(void)
   }
   printf("TLS cert OK\r\n");
 
-  /* ── Network registration (APN: safaricom) ──────────────────────────── */
+  /* ── Network registration (APN: internet) ──────────────────────────── */
   printf("Registering on network...\r\n");
-  A7672E_Status_t net_st = A7672E_InitNetwork("safaricom");
+  A7672E_Status_t net_st = A7672E_InitNetwork("internet");
   if (net_st != A7672E_OK) {
       const char *reason = (net_st == A7672E_NO_SIM) ? "no SIM / SIM removed" :
                            (net_st == A7672E_NO_NET) ? "registration timeout"  :
