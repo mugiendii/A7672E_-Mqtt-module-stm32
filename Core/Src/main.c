@@ -22,8 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "a7672e.h"
-#include "payload.h"
-#include "cacert.h"
+
 #include <stdio.h>
 #include <string.h>
 /* USER CODE END Includes */
@@ -113,6 +112,31 @@ static void on_mqtt_lost(void)
     g_mqtt_reconnect = 1;
 }
 
+/* ── Custom hex payloads cycled to a7672/data every 60 s ────────────── */
+static const char * const g_payloads[] = {
+    "68250100103254769881239025012b140000002b50000000000000000004ddccbbaa502800005523270426200000b916",
+    "68250100103254769881239025022b280000002b3c000000000000000004ddccbbaa2029000025002704262000003816",
+    "68250100103254769881239025032b3c0000002b28000000000000000004ddccbbaa1529000055002704262000005e16",
+    "68250100103254769881239025042b500000002b14000000000000000004ddccbbaa902800002501270426200000aa16",
+    "68250100103254769881239025052b500000002b0000000000000000000744332211252900005501270426200000fc16",
+    "68250100103254769881239025062b640000002b1e00000000000000000212903cfa3029000025022704262000003416",
+    "68250100103254769881239025072b780000002b0a00000000000000000212903cfa1029000055022704262000004516",
+    "68250100103254769881239025082b8c0000002b28000000000000000004ddccbbaa752800002503270426200000e516",
+    "68250100103254769881239025092ba00000002b14000000000000000004ddccbbaa6028000055032704262000000116",
+    "682501001032547698812390250a2ba00000002b00000000000000000007443322115028000025042704262000004e16",
+    "682501001032547698812390250b2baa0000002b0000000000000000000212903cfa802800005504270426200000e216",
+    "682501001032547698812390250c2bbe0000002b32000000000000000003887766550029000025052704262000005e16",
+    "682501001032547698812390250d2bd20000002b1e000000000000000003887766550529000055052704262000009416",
+    "682501001032547698812390250e2be60000002b0a00000000000000000388776655952800002506270426200000f516",
+    "682501001032547698812390250f2bfa0000002b00000000000000000004ddccbbaa7028000055062704262000006016",
+    "68250100103254769881239025102b0e0100002b1400000000000000000212903cfa6528000025072704262000001816",
+    "68250100103254769881239025112b220100002b0000000000000000000212903cfa6028000055072704262000004416",
+    "68250100103254769881239025122b360100002b2800000000000000000744332211102900002508270426200000da16",
+    "68250100103254769881239025132b4a0100002b14000000000000000007443322112029000055082704262000001b16",
+    "68250100103254769881239025142b5e0100002b0000000000000000000744332211152900002509270426200000e216",
+};
+#define PAYLOAD_COUNT  (sizeof(g_payloads) / sizeof(g_payloads[0]))
+
 /* USER CODE END 0 */
 
 /**
@@ -149,30 +173,24 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  /* ── HiveMQ Cloud broker (TLS, port 8883) ──────────────────────────── */
+  /* ── Broker: remote Mosquitto (plain TCP 1883) ────────────────────── */
   static const A7672E_MqttConfig_t mqtt_cfg = {
-      .broker       = "c6311e307d084a429f12a0e9a2f5dff1.s1.eu.hivemq.cloud",
-      .port         = 8883,
-      .client_id    = "STM32_A7672E_01",   /* unique per device */
-      .username     = "mugiendii",
-      .password     = "Qwerty001",
-      .use_ssl      = 1,
-      /* Last-will: broker publishes this if the device disconnects silently */
-      .will_topic   = "device/status",
-      .will_payload = "offline",
-      .will_qos     = 1,
-      .will_retain  = 1,
+      .broker    = "157.173.107.18",
+      .port      = 1883,
+      .client_id = "A7672Client",
+      .username  = "admin",
+      .password  = "mugiendii",
+      .use_ssl   = 0,
   };
 
   /* Network configuration — from your ESP32 implementation */
   static const char *A7672E_PIN = "3759";        /* Your Safaricom SIM PIN */
   static const char *A7672E_APN = "safaricom";   /* Safaricom APN */
 
-  /* Topics — also referenced in the main loop */
-  #define TOPIC_TRANSACTIONS  "mpesa/transactions"
-  #define TOPIC_HEARTBEAT     "device/heartbeat"
-  #define TOPIC_STATUS        "device/status"
-  #define TOPIC_COMMANDS      "device/commands"
+  /* Topics (mirrors setup.py) */
+  #define TOPIC_STATUS        "a7672/status"
+  #define TOPIC_DATA          "a7672/data"
+  #define TOPIC_COMMANDS      "a7672/#"
 
   printf("== A7672E LTE HAL starting ==\r\n");
 
@@ -190,13 +208,6 @@ int main(void)
   }
   printf("Modem OK\r\n");
 
-  /* ── Upload TLS CA certificate ─────────────────────────────────────── */
-  printf("Uploading TLS cert...\r\n");
-  if (A7672E_TlsUploadCert(CACERT_PEM, CACERT_PEM_LEN) != A7672E_OK) {
-      printf("ERROR: TLS cert upload failed\r\n");
-      Error_Handler();
-  }
-  printf("TLS cert OK\r\n");
 
   /* ── Network registration ──────────────────────────── */
   printf("Registering on network...\r\n");
@@ -211,7 +222,7 @@ int main(void)
   printf("Network ready\r\n");
 
   /* ── MQTT connect ───────────────────────────────────────────────────── */
-  printf("Connecting to HiveMQ Cloud...\r\n");
+  printf("Connecting to local Mosquitto...\r\n");
   if (A7672E_MqttConnect(&mqtt_cfg) != A7672E_OK) {
       printf("ERROR: MQTT connect failed\r\n");
       Error_Handler();
@@ -219,13 +230,9 @@ int main(void)
   printf("MQTT connected\r\n");
 
   /* Announce online */
-  {
-      char sbuf[32];
-      Payload_BuildStatus(sbuf, sizeof(sbuf), 1);
-      A7672E_MqttPublish(TOPIC_STATUS, sbuf, 1, 1);
-  }
+  A7672E_MqttPublish(TOPIC_STATUS, "Device connected", 1, 0);
 
-  /* ── Subscribe to downlink command topic ────────────────────────────── */
+  /* ── Subscribe to all a7672 topics ────────────────────────────────── */
   if (A7672E_MqttSubscribe(TOPIC_COMMANDS, 1) != A7672E_OK) {
       printf("ERROR: subscribe failed\r\n");
       Error_Handler();
@@ -236,8 +243,17 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  uint32_t last_transaction = HAL_GetTick();
-  uint32_t last_heartbeat   = HAL_GetTick();
+  uint32_t last_heartbeat = HAL_GetTick();
+  uint32_t last_payload   = HAL_GetTick();   /* first payload fires after 60 s */
+  uint32_t payload_index  = 0;
+
+  /* Send first payload immediately (mirrors setup.py behaviour) */
+  printf("[TX] Sending payload 1/%u to %s\r\n", (unsigned)PAYLOAD_COUNT, TOPIC_DATA);
+  if (A7672E_MqttPublish(TOPIC_DATA, g_payloads[0], 1, 0) == A7672E_OK)
+      printf("[TX] OK\r\n");
+  else
+      printf("[TX] FAILED\r\n");
+  payload_index = 1;
 
   while (1)
   {
@@ -245,7 +261,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    /* Drive the URC / downlink state machine — must run every iteration */
+    /* Drive URC state machine every loop iteration */
     A7672E_Process();
 
     /* Reconnect if broker dropped the connection */
@@ -253,47 +269,37 @@ int main(void)
         g_mqtt_reconnect = 0;
         printf("Reconnecting...\r\n");
         if (A7672E_MqttConnect(&mqtt_cfg) == A7672E_OK) {
-            char sbuf[32];
-            Payload_BuildStatus(sbuf, sizeof(sbuf), 1);
-            A7672E_MqttPublish(TOPIC_STATUS, sbuf, 1, 1);
+            A7672E_MqttPublish(TOPIC_STATUS, "Device connected", 1, 0);
             A7672E_MqttSubscribe(TOPIC_COMMANDS, 1);
         }
     }
 
-    /* ── Heartbeat — every 60 s ─────────────────────────────────────── */
-    if ((HAL_GetTick() - last_heartbeat) >= 60000u) {
+    /* ── Heartbeat to a7672/status every 30 s ────────────────────── */
+    if ((HAL_GetTick() - last_heartbeat) >= 30000u) {
         last_heartbeat = HAL_GetTick();
-        char hbuf[32];
-        Payload_BuildHeartbeat(hbuf, sizeof(hbuf));
-        if (A7672E_MqttPublish(TOPIC_HEARTBEAT, hbuf, 0, 0) == A7672E_OK)
-            printf("Heartbeat sent\r\n");
+        char hbuf[48];
+        snprintf(hbuf, sizeof(hbuf), "{\"uptime_ms\":%lu}",
+                 (unsigned long)HAL_GetTick());
+        if (A7672E_MqttPublish(TOPIC_STATUS, hbuf, 0, 0) == A7672E_OK)
+            printf("[HB] sent: %s\r\n", hbuf);
+        else
+            printf("[HB] FAILED\r\n");
     }
 
-    /* ── Sample transaction uplink — every 30 s ─────────────────────── *
-     * Replace this block with real parsed transaction data from your    *
-     * application.  The payload schema matches mpesa/transactions.      */
-    if ((HAL_GetTick() - last_transaction) >= 30000u) {
-        last_transaction = HAL_GetTick();
-
-        Payload_Transaction_t tx = {
-            .code         = "UAD3C3UU9F",
-            .type         = "received",
-            .amount       = "128.00",
-            .sender       = "Owen Wafula",
-            .sender_phone = "0115094171",
-            .recipient    = "",              /* not used for "received" */
-            .balance      = "342.89",
-            .ts           = "26/01/13,18:02:52+12",
-            .uptime_ms    = HAL_GetTick(),
-        };
-
-        char tbuf[256];
-        uint16_t tlen = Payload_BuildTransaction(tbuf, sizeof(tbuf), &tx);
-        if (tlen > 0) {
-            if (A7672E_MqttPublish(TOPIC_TRANSACTIONS, tbuf, 1, 0) == A7672E_OK)
-                printf("TX published: %s\r\n", tbuf);
+    /* ── Hex payload to a7672/data every 60 s (cycle through all 20) ── */
+    if ((HAL_GetTick() - last_payload) >= 60000u) {
+        last_payload = HAL_GetTick();
+        if (payload_index < PAYLOAD_COUNT) {
+            printf("[TX] Sending payload %lu/%u...\r\n",
+                   (unsigned long)(payload_index + 1), (unsigned)PAYLOAD_COUNT);
+            if (A7672E_MqttPublish(TOPIC_DATA, g_payloads[payload_index], 1, 0) == A7672E_OK)
+                printf("[TX] OK\r\n");
             else
-                printf("TX publish FAILED\r\n");
+                printf("[TX] FAILED\r\n");
+            payload_index++;
+        } else {
+            printf("[TX] All %u payloads sent. Monitoring...\r\n",
+                   (unsigned)PAYLOAD_COUNT);
         }
     }
 

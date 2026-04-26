@@ -370,60 +370,101 @@ A7672E_Status_t A7672E_TlsUploadCert(const char *pem, uint16_t pem_len)
 
 A7672E_Status_t A7672E_MqttConnect(const A7672E_MqttConfig_t *cfg)
 {
-    char cmd[180];
+    char cmd[200];
 
-    printf("[MQTT] Tearing down any stale session...\r\n");
-    /* Tear down any stale session */
-    modem_cmd("AT+CMQTTDISC=0,10", "OK", 3000, NULL, 0);
-    modem_cmd("AT+CMQTTREL=0",     "OK", 1000, NULL, 0);
-    modem_cmd("AT+CMQTTSTOP",      "OK", 3000, NULL, 0);
+    /* ── Step 1: Tear down any stale session ──────────────────────────── */
+    printf("[MQTT] Resetting stale MQTT state...\r\n");
+    modem_cmd("AT+CMQTTDISC=0", "OK", 3000, NULL, 0);   /* ignore errors */
+    modem_cmd("AT+CMQTTREL=0",  "OK", 1000, NULL, 0);
+    modem_cmd("AT+CMQTTSTOP",   "OK", 3000, NULL, 0);
+    HAL_Delay(1000);
 
-    printf("[MQTT] Starting MQTT service...\r\n");
-    /* Start MQTT service */
-    if (modem_cmd("AT+CMQTTSTART", "OK", 5000, NULL, 0) != A7672E_OK) {
-        printf("[MQTT] ERROR: CMQTTSTART failed\r\n");
-        return A7672E_ERR;
+    /* ── Step 2: Start MQTT engine; wait for +CMQTTSTART: 0 URC ─────── */
+    printf("[MQTT] Starting MQTT engine...\r\n");
+    modem_send("AT+CMQTTSTART");
+    /* Engine takes up to 5 s; look for OK then URC, or URC embedded in OK line */
+    {
+        uint32_t t0 = HAL_GetTick();
+        int got_ok = 0, got_urc = 0;
+        while ((HAL_GetTick() - t0) < 7000u) {
+            char line[A7672E_LINE_BUF_SIZE];
+            if (!modem_read_line(line, sizeof(line), 300)) continue;
+            printf("[MQTT] start: %s", line);
+            if (strstr(line, "OK"))               got_ok  = 1;
+            if (strstr(line, "+CMQTTSTART: 0"))   got_urc = 1;
+            if (got_ok && got_urc) break;
+            if (strstr(line, "ERROR")) {
+                printf("[MQTT] ERROR: CMQTTSTART failed\r\n");
+                return A7672E_ERR;
+            }
+        }
+        if (!got_ok) {
+            printf("[MQTT] ERROR: CMQTTSTART no OK\r\n");
+            return A7672E_ERR;
+        }
+        if (!got_urc) {
+            printf("[MQTT] WARN: +CMQTTSTART URC not seen, continuing...\r\n");
+        }
     }
+    printf("[MQTT] MQTT engine started\r\n");
 
-    printf("[MQTT] Acquiring client session...\r\n");
-    /* Acquire client session 0 */
-    snprintf(cmd, sizeof(cmd), "AT+CMQTTACCQ=0,\"%s\",%d",
-             cfg->client_id, (int)cfg->use_ssl);
+    /* ── Step 3: Acquire client session 0 ────────────────────────────── */
+    snprintf(cmd, sizeof(cmd), "AT+CMQTTACCQ=0,\"%s\"", cfg->client_id);
     if (modem_cmd(cmd, "OK", 3000, NULL, 0) != A7672E_OK) {
         printf("[MQTT] ERROR: CMQTTACCQ failed\r\n");
         return A7672E_ERR;
     }
 
-    printf("[MQTT] Setting MQTT version...\r\n");
-    /* Use MQTT 3.1.1 */
-    modem_cmd("AT+CMQTTCFG=\"version\",0,4", "OK", 2000, NULL, 0);
-
-    /* Optional last-will message */
-    if (cfg->will_topic[0] != '\0') {
-        printf("[MQTT] Setting last-will message...\r\n");
-        snprintf(cmd, sizeof(cmd),
-                 "AT+CMQTTWILL=0,\"%s\",%d,%d,\"%s\"",
-                 cfg->will_topic, (int)cfg->will_qos,
-                 (int)cfg->will_retain, cfg->will_payload);
-        modem_cmd(cmd, "OK", 3000, NULL, 0);
-    }
-
-    printf("[MQTT] Connecting to %s:%d (use_ssl=%d)...\r\n",
-           cfg->broker, cfg->port, cfg->use_ssl);
-    /* Connect — wait up to 30 s for +CMQTTCONNECT: 0,0 */
-    /* For TLS: use "tls://" scheme and port 8883, with SSL context 0 */
-    snprintf(cmd, sizeof(cmd),
-             "AT+CMQTTCONNECT=0,\"%s://%s:%d\",60,1,\"%s\",\"%s\"",
-             cfg->use_ssl ? "tls" : "tcp",
-             cfg->broker, (int)cfg->port, cfg->username, cfg->password);
-
-    printf("[MQTT] Sending: %s\r\n", cmd);
-    if (modem_cmd(cmd, "+CMQTTCONNECT: 0,0", 30000, NULL, 0) != A7672E_OK) {
-        printf("[MQTT] ERROR: Connection command failed or timed out\r\n");
+    /* ── Step 4a: Protocol version MQTT 3.1.1 ────────────────────────── */
+    if (modem_cmd("AT+CMQTTCFG=\"version\",0,4", "OK", 2000, NULL, 0) != A7672E_OK) {
+        printf("[MQTT] ERROR: CMQTTCFG version failed\r\n");
         return A7672E_ERR;
     }
 
-    printf("[MQTT] Successfully connected!\r\n");
+    /* ── Step 4b: Operation timeout 60 s ─────────────────────────────── */
+    if (modem_cmd("AT+CMQTTCFG=\"optimeout\",0,60", "OK", 2000, NULL, 0) != A7672E_OK) {
+        printf("[MQTT] ERROR: CMQTTCFG optimeout failed\r\n");
+        return A7672E_ERR;
+    }
+
+    /* ── Step 5: Connect ──────────────────────────────────────────────── */
+    snprintf(cmd, sizeof(cmd),
+             "AT+CMQTTCONNECT=0,\"%s://%s:%d\",60,1,\"%s\",\"%s\"",
+             cfg->use_ssl ? "tls" : "tcp",
+             cfg->broker, (int)cfg->port,
+             cfg->username, cfg->password);
+
+    printf("[MQTT] Connecting: %s\r\n", cmd);
+    modem_send(cmd);
+
+    /* Wait up to 15 s for OK then +CMQTTCONNECT: 0,0 URC */
+    {
+        uint32_t t0 = HAL_GetTick();
+        int got_ok = 0, got_conn_ok = 0;
+        while ((HAL_GetTick() - t0) < 15000u) {
+            char line[A7672E_LINE_BUF_SIZE];
+            if (!modem_read_line(line, sizeof(line), 300)) continue;
+            printf("[MQTT] conn: %s", line);
+            if (strstr(line, "OK"))                  got_ok      = 1;
+            if (strstr(line, "+CMQTTCONNECT: 0,0"))  got_conn_ok = 1;
+            if (got_ok && got_conn_ok) break;
+            /* Any non-zero error code means refused */
+            if (strstr(line, "+CMQTTCONNECT: 0,") && !strstr(line, "+CMQTTCONNECT: 0,0")) {
+                printf("[MQTT] ERROR: broker refused connection\r\n");
+                return A7672E_ERR;
+            }
+            if (strstr(line, "ERROR")) {
+                printf("[MQTT] ERROR: CMQTTCONNECT command error\r\n");
+                return A7672E_ERR;
+            }
+        }
+        if (!got_conn_ok) {
+            printf("[MQTT] ERROR: +CMQTTCONNECT: 0,0 URC not received\r\n");
+            return A7672E_TIMEOUT;
+        }
+    }
+
+    printf("[MQTT] Connected successfully!\r\n");
     return A7672E_OK;
 }
 
