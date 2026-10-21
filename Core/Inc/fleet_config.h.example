@@ -1,0 +1,24 @@
+/**
+ * @file  fleet_config.h.example
+ * @brief Settings shared by every device. Copy to fleet_config.h (same folder).
+ *
+ * One firmware image runs on every device: a device's own id and password
+ * are not here. On first boot it claims them from the broker and keeps them
+ * in flash (devcfg.c; PROVISIONING.md in the mqtt repo).
+ *
+ * fleet_config.h is in .gitignore: never commit it.
+ */
+
+#ifndef FLEET_CONFIG_H
+#define FLEET_CONFIG_H
+
+/* First-boot login `provision`: Infisical, Nodewave / prod / /mqtt,
+ * MQTT_PROVISION_BOOTSTRAP_PASSWORD. It can only claim a login for this
+ * device's IMEI: no device data, no commands. */
+#define PROVISION_PASSWORD  "paste-MQTT_PROVISION_BOOTSTRAP_PASSWORD-here"
+
+/* SIM card */
+#define SIM_PIN             ""            /* "" if the SIMs have no PIN */
+#define SIM_APN             "safaricom"
+
+#endif /* FLEET_CONFIG_H */

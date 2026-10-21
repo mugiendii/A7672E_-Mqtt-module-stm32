@@ -1,6 +1,6 @@
-# Build output: the .elf/.map embed the device password from device_config.h
+# Build output: the .elf/.map are build products; keep them out of git
 Debug/
 Release/
 
-# Per-device id, password and SIM PIN (template: device_config.h.example)
-Core/Inc/device_config.h
+# Fleet settings: first-boot password, SIM PIN (template: fleet_config.h.example)
+Core/Inc/fleet_config.h

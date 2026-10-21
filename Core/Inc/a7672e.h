@@ -141,6 +141,18 @@ A7672E_Status_t A7672E_WaitReady(uint32_t timeout_ms);
 A7672E_Status_t A7672E_InitNetwork(const char *pin, const char *apn);
 
 /**
+ * @brief Read the module's IMEI (AT+CGSN).
+ * @param imei  Buffer for the 15 digits, at least 16 bytes
+ * @return A7672E_OK on success
+ */
+A7672E_Status_t A7672E_GetImei(char *imei);
+
+/**
+ * @brief Disconnect from the broker and release MQTT client 0.
+ */
+void A7672E_MqttDisconnect(void);
+
+/**
  * @brief Upload a PEM CA certificate to the modem filesystem and configure
  *        SSL context 0.  Call once after A7672E_WaitReady(), before
  *        A7672E_MqttConnect() when use_ssl = 1.

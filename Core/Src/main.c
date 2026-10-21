@@ -23,15 +23,17 @@
 /* USER CODE BEGIN Includes */
 #include "a7672e.h"
 #include "cacert.h"
+#include "devcfg.h"
 
-/* Per-device id, password and SIM settings: not in git (see the .example) */
-#if __has_include("device_config.h")
-#include "device_config.h"
+/* Settings shared by every device (not in git, see the .example) */
+#if __has_include("fleet_config.h")
+#include "fleet_config.h"
 #else
-#error "Copy Core/Inc/device_config.h.example to device_config.h and fill it in"
+#error "Copy Core/Inc/fleet_config.h.example to fleet_config.h and fill it in"
 #endif
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 /* USER CODE END Includes */
 
@@ -43,15 +45,17 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-/* Broker: mqtt.nodewave.dev, TLS. Topics: DEVICE_ID/up/... (device -> server)
- * and DEVICE_ID/down/... (server -> device); see BUILDING.md in the mqtt repo */
-#define MQTT_BROKER         "mqtt.nodewave.dev"
-#define MQTT_PORT           8883
+#define FW_VERSION          "1.1.0"
 
-#define TOPIC_STATUS        DEVICE_ID "/up/status"
-#define TOPIC_DATA          DEVICE_ID "/up/data"
-#define TOPIC_DOWN          DEVICE_ID "/down/#"
-#define TOPIC_CMD           DEVICE_ID "/down/cmd"
+/* First boot: no login in flash yet. The device connects with the shared
+ * `provision` login as client id imei-<IMEI>, publishes a claim on
+ * provision/imei-<IMEI>/up every CLAIM_INTERVAL_MS and waits for its own
+ * login on provision/imei-<IMEI>/down (sent once someone approves it in the
+ * platform app). See PROVISIONING.md in the mqtt repo. */
+#define PROVISION_HOST      "mqtt.nodewave.dev"
+#define PROVISION_PORT      8883
+#define PROVISION_USER      "provision"
+#define CLAIM_INTERVAL_MS   60000u
 
 /* Reconnect back-off: the broker blocks an IP that opens more than 20
  * connections a minute, so never retry in a tight loop */
@@ -95,22 +99,84 @@ int __io_putchar(int ch)
     return ch;
 }
 
-/* ── MQTT downlink callback ──────────────────────────────────────────── */
-static void on_mqtt_message(const char *topic, const char *payload,
-                             uint16_t payload_len)
+/* ── State ───────────────────────────────────────────────────────────── *
+ * Topics: <id>/up/... (device -> server), <id>/down/... (server -> device) */
+static DevCfg_t            g_dev;            /* this device's login (flash) */
+static A7672E_MqttConfig_t g_mqtt_cfg;       /* what mqtt_start() connects with */
+static char g_imei[16];
+static char g_prov_up[48], g_prov_down[48];
+static char g_topic_status[48], g_topic_data[48], g_topic_down[48];
+static char g_topic_cmd[48], g_topic_cfg[48];
+static const char *g_subscribe;              /* g_prov_down or g_topic_down */
+
+static volatile uint8_t g_mqtt_reconnect = 0;
+static volatile uint8_t g_got_login      = 0;   /* provisioning reply arrived */
+static volatile uint8_t g_reprovision    = 0;   /* cfg asked to forget the login */
+static DevCfg_t         g_new_login;
+
+/* Copy the string value of "key" from a flat JSON object. No escapes: ids,
+ * passwords and host names never contain quotes or backslashes. */
+static int json_str(const char *json, const char *key, char *out, size_t size)
 {
-    printf("[MQTT RX] topic: %s\r\n", topic);
-    printf("[MQTT RX] payload (%u B): %.*s\r\n",
-           (unsigned)payload_len, (int)payload_len, payload);
+    char pat[24];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if (!p) return 0;
+    p += strlen(pat);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p++ != '"') return 0;
+    size_t n = 0;
+    while (*p && *p != '"' && n + 1 < size) out[n++] = *p++;
+    out[n] = '\0';
+    return *p == '"' && n > 0;
+}
 
-    /* Only <id>/down/cmd drives outputs; other down/ topics (cfg, ...) are
-     * ignored until handled, so a new topic can never toggle a pin. */
-    if (strcmp(topic, TOPIC_CMD) != 0)
+static int json_int(const char *json, const char *key, long *out)
+{
+    char pat[24];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if (!p) return 0;
+    p += strlen(pat);
+    while (*p == ' ' || *p == ':') p++;
+    char *end;
+    *out = strtol(p, &end, 10);
+    return end != p;
+}
+
+static int valid_id(const char *id)
+{
+    size_t n = strlen(id);
+    if (n < 2 || n > 31) return 0;
+    for (size_t i = 0; i < n; i++)
+        if (!((id[i] >= 'a' && id[i] <= 'z') || (id[i] >= '0' && id[i] <= '9') ||
+              (id[i] == '-' && i > 0)))
+            return 0;
+    return 1;
+}
+
+/* ── Provisioning reply: {"id","password","host","port"} ─────────────── */
+static void handle_login_reply(const char *payload)
+{
+    DevCfg_t c;
+    long port = 0;
+    memset(&c, 0, sizeof(c));
+    if (!json_str(payload, "id", c.device_id, sizeof(c.device_id)) || !valid_id(c.device_id) ||
+        !json_str(payload, "password", c.password, sizeof(c.password)) ||
+        !json_str(payload, "host", c.host, sizeof(c.host)) ||
+        !json_int(payload, "port", &port) || port <= 0 || port > 65535) {
+        printf("[PROV] reply not understood, still waiting\r\n");
         return;
+    }
+    c.port = (uint16_t)port;
+    g_new_login = c;
+    g_got_login = 1;
+}
 
-    /* ── Command dispatch on <id>/down/cmd ───────────────────────────── *
-     * Expected JSON:  {"cmd":"output0","val":1}                          *
-     * Extend this section to handle your downlink commands.              */
+/* ── <id>/down/cmd: {"cmd":"output0","val":1} ────────────────────────── *
+ * Extend this section to handle your downlink commands.                  */
+static void handle_cmd(const char *payload)
+{
     if (strstr(payload, "\"output0\"")) {
         uint8_t state = strstr(payload, "\"val\":1") ? 1u : 0u;
         HAL_GPIO_WritePin(output0_GPIO_Port, output0_Pin,
@@ -131,40 +197,47 @@ static void on_mqtt_message(const char *topic, const char *payload,
     }
 }
 
-/* ── MQTT connection-lost callback ──────────────────────────────────── */
-static volatile uint8_t g_mqtt_reconnect = 0;
+/* ── MQTT downlink callback ──────────────────────────────────────────── */
+static void on_mqtt_message(const char *topic, const char *payload,
+                             uint16_t payload_len)
+{
+    printf("[MQTT RX] topic: %s (%u B)\r\n", topic, (unsigned)payload_len);
 
+    if (strcmp(topic, g_prov_down) == 0) {
+        handle_login_reply(payload);          /* never print: has the password */
+        return;
+    }
+    printf("[MQTT RX] payload: %.*s\r\n", (int)payload_len, payload);
+
+    if (strcmp(topic, g_topic_cmd) == 0)
+        handle_cmd(payload);
+    else if (strcmp(topic, g_topic_cfg) == 0 &&
+             strstr(payload, "\"type\":\"reprovision\""))
+        g_reprovision = 1;
+    /* other down/ topics: ignored until handled */
+}
+
+/* ── MQTT connection-lost callback ──────────────────────────────────── */
 static void on_mqtt_lost(void)
 {
     printf("[MQTT] connection lost — will reconnect\r\n");
     g_mqtt_reconnect = 1;
 }
 
-static const A7672E_MqttConfig_t g_mqtt_cfg = {
-    .broker       = MQTT_BROKER,
-    .port         = MQTT_PORT,
-    .client_id    = DEVICE_ID,
-    .username     = DEVICE_ID,
-    .password     = MQTT_PASSWORD,
-    .use_ssl      = 1,
-    .will_topic   = TOPIC_STATUS,
-    .will_payload = "offline",
-    .will_qos     = 1,
-};
-
-/* Connect, announce online and subscribe to everything under <id>/down/ */
+/* Connect with g_mqtt_cfg, announce online (own login only), subscribe */
 static A7672E_Status_t mqtt_start(void)
 {
     if (A7672E_MqttConnect(&g_mqtt_cfg) != A7672E_OK)
         return A7672E_ERR;
     /* Not retained: the modem's last will cannot be retained, so a retained
      * "online" would outlive the device */
-    A7672E_MqttPublish(TOPIC_STATUS, "online", 1, 0);
-    if (A7672E_MqttSubscribe(TOPIC_DOWN, 1) != A7672E_OK) {
-        printf("[MQTT] subscribe to %s failed\r\n", TOPIC_DOWN);
+    if (g_subscribe == g_topic_down)
+        A7672E_MqttPublish(g_topic_status, "online", 1, 0);
+    if (A7672E_MqttSubscribe(g_subscribe, 1) != A7672E_OK) {
+        printf("[MQTT] subscribe to %s failed\r\n", g_subscribe);
         return A7672E_ERR;
     }
-    printf("[MQTT] subscribed to %s\r\n", TOPIC_DOWN);
+    printf("[MQTT] subscribed to %s\r\n", g_subscribe);
     return A7672E_OK;
 }
 
@@ -177,6 +250,59 @@ static void mqtt_start_with_backoff(void)
                (unsigned long)(delay / 1000u));
         HAL_Delay(delay);
         delay = (delay * 2u > RECONNECT_MAX_MS) ? RECONNECT_MAX_MS : delay * 2u;
+    }
+}
+
+/* ── First boot: claim a login, save it, reboot. Never returns. ─────── */
+static void run_provisioning(void)
+{
+    static char client_id[24];
+    snprintf(client_id, sizeof(client_id), "imei-%s", g_imei);
+
+    memset(&g_mqtt_cfg, 0, sizeof(g_mqtt_cfg));
+    strcpy(g_mqtt_cfg.broker, PROVISION_HOST);
+    g_mqtt_cfg.port = PROVISION_PORT;
+    strcpy(g_mqtt_cfg.client_id, client_id);
+    strcpy(g_mqtt_cfg.username, PROVISION_USER);
+    strcpy(g_mqtt_cfg.password, PROVISION_PASSWORD);
+    g_mqtt_cfg.use_ssl = 1;
+    g_subscribe = g_prov_down;
+
+    char claim[96];
+    snprintf(claim, sizeof(claim), "{\"imei\":\"%s\",\"fw\":\"%s\",\"uid\":\"%08lx%08lx%08lx\"}",
+             g_imei, FW_VERSION, (unsigned long)HAL_GetUIDw2(),
+             (unsigned long)HAL_GetUIDw1(), (unsigned long)HAL_GetUIDw0());
+
+    printf("[PROV] no login yet. IMEI %s: approve it in the platform app\r\n", g_imei);
+    mqtt_start_with_backoff();
+    uint32_t last_claim = HAL_GetTick() - CLAIM_INTERVAL_MS;   /* claim now */
+
+    while (1) {
+        A7672E_Process();
+
+        if (g_mqtt_reconnect) {
+            g_mqtt_reconnect = 0;
+            mqtt_start_with_backoff();
+            last_claim = HAL_GetTick() - CLAIM_INTERVAL_MS;
+        }
+
+        if ((HAL_GetTick() - last_claim) >= CLAIM_INTERVAL_MS) {
+            last_claim = HAL_GetTick();
+            printf("[PROV] claim %s\r\n",
+                   A7672E_MqttPublish(g_prov_up, claim, 1, 0) == A7672E_OK ? "sent" : "FAILED");
+        }
+
+        if (g_got_login) {
+            g_got_login = 0;
+            if (DevCfg_Save(&g_new_login)) {
+                printf("[PROV] login saved: %s. Rebooting\r\n", g_new_login.device_id);
+                A7672E_MqttDisconnect();
+                HAL_Delay(200);
+                NVIC_SystemReset();
+            }
+            /* The server resends it with the next claim */
+            printf("[PROV] ERROR: saving the login to flash failed\r\n");
+        }
     }
 }
 
@@ -241,7 +367,7 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  printf("== A7672E LTE HAL starting (device %s) ==\r\n", DEVICE_ID);
+  printf("== A7672E LTE HAL %s starting ==\r\n", FW_VERSION);
 
   /* ── Initialise driver, register callbacks ──────────────────────────── */
   A7672E_Init();
@@ -256,7 +382,6 @@ int main(void)
       Error_Handler();
   }
   printf("Modem OK\r\n");
-
 
   /* ── Network registration ──────────────────────────── */
   printf("Registering on network...\r\n");
@@ -276,8 +401,38 @@ int main(void)
       Error_Handler();
   }
 
+  /* ── Identity: IMEI for provisioning, login from flash ──────────────── */
+  if (A7672E_GetImei(g_imei) != A7672E_OK) {
+      printf("ERROR: could not read the IMEI\r\n");
+      Error_Handler();
+  }
+  snprintf(g_prov_up,   sizeof(g_prov_up),   "provision/imei-%s/up",   g_imei);
+  snprintf(g_prov_down, sizeof(g_prov_down), "provision/imei-%s/down", g_imei);
+
+  if (!DevCfg_Load(&g_dev))
+      run_provisioning();                    /* claims a login, reboots */
+
+  snprintf(g_topic_status, sizeof(g_topic_status), "%s/up/status", g_dev.device_id);
+  snprintf(g_topic_data,   sizeof(g_topic_data),   "%s/up/data",   g_dev.device_id);
+  snprintf(g_topic_down,   sizeof(g_topic_down),   "%s/down/#",    g_dev.device_id);
+  snprintf(g_topic_cmd,    sizeof(g_topic_cmd),    "%s/down/cmd",  g_dev.device_id);
+  snprintf(g_topic_cfg,    sizeof(g_topic_cfg),    "%s/down/cfg",  g_dev.device_id);
+
+  memset(&g_mqtt_cfg, 0, sizeof(g_mqtt_cfg));
+  strcpy(g_mqtt_cfg.broker, g_dev.host);
+  g_mqtt_cfg.port = g_dev.port;
+  strcpy(g_mqtt_cfg.client_id, g_dev.device_id);
+  strcpy(g_mqtt_cfg.username, g_dev.device_id);
+  strcpy(g_mqtt_cfg.password, g_dev.password);
+  g_mqtt_cfg.use_ssl = 1;
+  strcpy(g_mqtt_cfg.will_topic, g_topic_status);
+  strcpy(g_mqtt_cfg.will_payload, "offline");
+  g_mqtt_cfg.will_qos = 1;
+  g_subscribe = g_topic_down;
+
   /* ── MQTT connect (retries with back-off) ───────────────────────────── */
-  printf("Connecting to %s:%d...\r\n", MQTT_BROKER, MQTT_PORT);
+  printf("Device %s connecting to %s:%u...\r\n",
+         g_dev.device_id, g_dev.host, (unsigned)g_dev.port);
   mqtt_start_with_backoff();
   printf("MQTT connected\r\n");
 
@@ -285,13 +440,14 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
   uint32_t last_heartbeat = HAL_GetTick();
   uint32_t last_payload   = HAL_GetTick();   /* first payload fires after 60 s */
   uint32_t payload_index  = 0;
 
   /* Send first payload immediately (mirrors setup.py behaviour) */
-  printf("[TX] Sending payload 1/%u to %s\r\n", (unsigned)PAYLOAD_COUNT, TOPIC_DATA);
-  if (A7672E_MqttPublish(TOPIC_DATA, g_payloads[0], 1, 0) == A7672E_OK)
+  printf("[TX] Sending payload 1/%u to %s\r\n", (unsigned)PAYLOAD_COUNT, g_topic_data);
+  if (A7672E_MqttPublish(g_topic_data, g_payloads[0], 1, 0) == A7672E_OK)
       printf("[TX] OK\r\n");
   else
       printf("[TX] FAILED\r\n");
@@ -303,8 +459,18 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
+
     /* Drive URC state machine every loop iteration */
     A7672E_Process();
+
+    /* <id>/down/cfg {"type":"reprovision"}: forget the login and claim a
+     * new one (to move this device to another id) */
+    if (g_reprovision) {
+        printf("[CFG] reprovision: forgetting login %s, rebooting\r\n", g_dev.device_id);
+        A7672E_MqttDisconnect();
+        DevCfg_Erase();
+        NVIC_SystemReset();
+    }
 
     /* Reconnect if broker dropped the connection */
     if (g_mqtt_reconnect) {
@@ -319,7 +485,7 @@ int main(void)
         char hbuf[48];
         snprintf(hbuf, sizeof(hbuf), "{\"uptime_ms\":%lu}",
                  (unsigned long)HAL_GetTick());
-        if (A7672E_MqttPublish(TOPIC_STATUS, hbuf, 0, 0) == A7672E_OK)
+        if (A7672E_MqttPublish(g_topic_status, hbuf, 0, 0) == A7672E_OK)
             printf("[HB] sent: %s\r\n", hbuf);
         else
             printf("[HB] FAILED\r\n");
@@ -331,7 +497,7 @@ int main(void)
         if (payload_index < PAYLOAD_COUNT) {
             printf("[TX] Sending payload %lu/%u...\r\n",
                    (unsigned long)(payload_index + 1), (unsigned)PAYLOAD_COUNT);
-            if (A7672E_MqttPublish(TOPIC_DATA, g_payloads[payload_index], 1, 0) == A7672E_OK)
+            if (A7672E_MqttPublish(g_topic_data, g_payloads[payload_index], 1, 0) == A7672E_OK)
                 printf("[TX] OK\r\n");
             else
                 printf("[TX] FAILED\r\n");

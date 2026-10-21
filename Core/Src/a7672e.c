@@ -339,6 +339,32 @@ reg_ok:
     return A7672E_OK;
 }
 
+A7672E_Status_t A7672E_GetImei(char *imei)
+{
+    char resp[96] = "";
+    if (modem_cmd("AT+CGSN", "OK", 2000, resp, sizeof(resp)) != A7672E_OK)
+        return A7672E_ERR;
+    /* The first run of 15 digits in the response is the IMEI */
+    for (char *p = resp; *p; p++) {
+        int n = 0;
+        while (p[n] >= '0' && p[n] <= '9') n++;
+        if (n == 15) {
+            memcpy(imei, p, 15);
+            imei[15] = '\0';
+            return A7672E_OK;
+        }
+        if (n) p += n - 1;
+    }
+    return A7672E_ERR;
+}
+
+void A7672E_MqttDisconnect(void)
+{
+    modem_cmd("AT+CMQTTDISC=0,60", "+CMQTTDISC:", 5000, NULL, 0);
+    modem_cmd("AT+CMQTTREL=0", "OK", 1000, NULL, 0);
+    modem_cmd("AT+CMQTTSTOP", "OK", 3000, NULL, 0);
+}
+
 A7672E_Status_t A7672E_TlsUploadCert(const char *pem, uint16_t pem_len)
 {
     char cmd[48];
