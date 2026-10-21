@@ -298,13 +298,23 @@ A7672E_Status_t A7672E_InitNetwork(const char *pin, const char *apn)
     if (modem_cmd("AT+CFUN=1", "OK", 3000, NULL, 0) != A7672E_OK)
         return A7672E_ERR;
 
-    /* 3 — Wait for LTE EPS registration (stat = 1 home, 5 roaming) */
+    /* 3 — Wait for registration (stat 1 = home, 5 = roaming) on any of
+     *     CREG (CS), CEREG (LTE) or CGREG (packet). Some networks report
+     *     CREG: 0,6 (SMS only) on LTE while CEREG says registered. */
+    static const char *const reg_cmds[] = { "AT+CEREG?", "AT+CGREG?", "AT+CREG?" };
     uint32_t t0 = HAL_GetTick();
     while ((HAL_GetTick() - t0) < 60000u) {
-        resp[0] = '\0';
-        modem_cmd("AT+CREG?", "+CREG:", 2000, resp, sizeof(resp));
-        printf("[NET] CREG: %s", resp);
-        if (strstr(resp, ",1") || strstr(resp, ",5")) goto reg_ok;
+        for (unsigned i = 0; i < sizeof(reg_cmds) / sizeof(reg_cmds[0]); i++) {
+            int n, stat;
+            const char *p;
+            resp[0] = '\0';
+            modem_cmd(reg_cmds[i], "OK", 2000, resp, sizeof(resp));
+            printf("[NET] %s", resp);
+            p = strstr(resp, "REG: ");
+            if (p && sscanf(p, "REG: %d,%d", &n, &stat) == 2 &&
+                (stat == 1 || stat == 5))
+                goto reg_ok;
+        }
         HAL_Delay(2000);
     }
     return A7672E_NO_NET;
@@ -521,7 +531,13 @@ A7672E_Status_t A7672E_MqttConnect(const A7672E_MqttConfig_t *cfg)
             if (got_ok && got_conn_ok) break;
             /* Any non-zero error code means refused */
             if (strstr(line, "+CMQTTCONNECT: 0,") && !strstr(line, "+CMQTTCONNECT: 0,0")) {
-                printf("[MQTT] ERROR: broker refused connection\r\n");
+                /* A76xx result codes, not MQTT's: seen on SIM7672G */
+                int code = 0;
+                sscanf(strstr(line, "+CMQTTCONNECT: 0,"), "+CMQTTCONNECT: 0,%d", &code);
+                printf("[MQTT] ERROR: connect refused, code %d (%s)\r\n", code,
+                       (code == 30 || code == 31) ? "wrong id/password or login not allowed" :
+                       (code == 32 || code == 33) ? "TLS handshake failed: check clock and CA" :
+                                                    "see the A76XX MQTT AT manual");
                 return A7672E_ERR;
             }
             if (strstr(line, "ERROR")) {
