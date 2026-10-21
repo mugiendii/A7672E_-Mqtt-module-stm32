@@ -290,6 +290,10 @@ A7672E_Status_t A7672E_InitNetwork(const char *pin, const char *apn)
         return A7672E_NO_SIM;
     }
 
+    /* 1b — Take the clock from the network. TLS checks certificate dates, so a
+     *      clock left at 1980/2000 fails every handshake. */
+    modem_cmd("AT+CTZU=1", "OK", 2000, NULL, 0);
+
     /* 2 — Set full functionality */
     if (modem_cmd("AT+CFUN=1", "OK", 3000, NULL, 0) != A7672E_OK)
         return A7672E_ERR;
@@ -322,6 +326,11 @@ reg_ok:
     resp[0] = '\0';
     modem_cmd("AT+CGPADDR=1", "+CGPADDR:", 3000, resp, sizeof(resp));
     printf("[NET] IP: %s", resp);
+
+    /* Clock should now be network time, not 1980/2000 (see 1b) */
+    resp[0] = '\0';
+    modem_cmd("AT+CCLK?", "+CCLK:", 2000, resp, sizeof(resp));
+    printf("[NET] CCLK: %s", resp);
 
     /* 6 — Configure SMS format and notifications */
     modem_cmd("AT+CMGF=1", "OK", 2000, NULL, 0);
@@ -356,12 +365,15 @@ A7672E_Status_t A7672E_TlsUploadCert(const char *pem, uint16_t pem_len)
     /* Bind CA cert to SSL context 0 */
     modem_cmd("AT+CSSLCFG=\"cacert\",0,\"cacert.pem\"", "OK", 3000, NULL, 0);
 
+    printf("[TLS] Setting TLS 1.2...\r\n");
+    modem_cmd("AT+CSSLCFG=\"sslversion\",0,3", "OK", 2000, NULL, 0);
+
     printf("[TLS] Setting auth mode...\r\n");
     /* Verify server certificate */
     modem_cmd("AT+CSSLCFG=\"authmode\",0,1", "OK", 2000, NULL, 0);
 
     printf("[TLS] Enabling SNI...\r\n");
-    /* Enable SNI — required by HiveMQ Cloud */
+    /* Enable SNI so the broker presents the certificate for its hostname */
     modem_cmd("AT+CSSLCFG=\"enableSNI\",0,1", "OK", 2000, NULL, 0);
 
     printf("[TLS] TLS setup complete\r\n");
@@ -408,10 +420,18 @@ A7672E_Status_t A7672E_MqttConnect(const A7672E_MqttConfig_t *cfg)
     }
     printf("[MQTT] MQTT engine started\r\n");
 
-    /* ── Step 3: Acquire client session 0 ────────────────────────────── */
-    snprintf(cmd, sizeof(cmd), "AT+CMQTTACCQ=0,\"%s\"", cfg->client_id);
+    /* ── Step 3: Acquire client session 0 (server type 1 = TLS) ──────── */
+    snprintf(cmd, sizeof(cmd), "AT+CMQTTACCQ=0,\"%s\",%d",
+             cfg->client_id, cfg->use_ssl ? 1 : 0);
     if (modem_cmd(cmd, "OK", 3000, NULL, 0) != A7672E_OK) {
         printf("[MQTT] ERROR: CMQTTACCQ failed\r\n");
+        return A7672E_ERR;
+    }
+
+    /* ── Step 3b: TLS — client 0 uses SSL context 0 (A7672E_TlsUploadCert) */
+    if (cfg->use_ssl &&
+        modem_cmd("AT+CMQTTSSLCFG=0,0", "OK", 2000, NULL, 0) != A7672E_OK) {
+        printf("[MQTT] ERROR: CMQTTSSLCFG failed\r\n");
         return A7672E_ERR;
     }
 
@@ -427,14 +447,39 @@ A7672E_Status_t A7672E_MqttConnect(const A7672E_MqttConfig_t *cfg)
         return A7672E_ERR;
     }
 
-    /* ── Step 5: Connect ──────────────────────────────────────────────── */
+    /* ── Step 4c: Last will (the modem has no retain flag for it) ───── */
+    if (cfg->will_topic[0] != '\0') {
+        uint16_t wtl = (uint16_t)strlen(cfg->will_topic);
+        uint16_t wpl = (uint16_t)strlen(cfg->will_payload);
+
+        snprintf(cmd, sizeof(cmd), "AT+CMQTTWILLTOPIC=0,%d", (int)wtl);
+        modem_send(cmd);
+        if (modem_wait_prompt(cfg->will_topic, wtl, 3000) != A7672E_OK ||
+            modem_cmd(NULL, "OK", 3000, NULL, 0) != A7672E_OK) {
+            printf("[MQTT] ERROR: CMQTTWILLTOPIC failed\r\n");
+            return A7672E_ERR;
+        }
+
+        snprintf(cmd, sizeof(cmd), "AT+CMQTTWILLMSG=0,%d,%d",
+                 (int)wpl, (int)cfg->will_qos);
+        modem_send(cmd);
+        if (modem_wait_prompt(cfg->will_payload, wpl, 3000) != A7672E_OK ||
+            modem_cmd(NULL, "OK", 3000, NULL, 0) != A7672E_OK) {
+            printf("[MQTT] ERROR: CMQTTWILLMSG failed\r\n");
+            return A7672E_ERR;
+        }
+    }
+
+    /* ── Step 5: Connect ──────────────────────────────────────────────── *
+     * The URL scheme is always tcp://, TLS comes from ACCQ + CMQTTSSLCFG. */
     snprintf(cmd, sizeof(cmd),
-             "AT+CMQTTCONNECT=0,\"%s://%s:%d\",60,1,\"%s\",\"%s\"",
-             cfg->use_ssl ? "tls" : "tcp",
+             "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",60,1,\"%s\",\"%s\"",
              cfg->broker, (int)cfg->port,
              cfg->username, cfg->password);
 
-    printf("[MQTT] Connecting: %s\r\n", cmd);
+    /* Never log cmd: it holds the password */
+    printf("[MQTT] Connecting to %s:%d as %s\r\n",
+           cfg->broker, (int)cfg->port, cfg->username);
     modem_send(cmd);
 
     /* Wait up to 15 s for OK then +CMQTTCONNECT: 0,0 URC */

@@ -22,6 +22,14 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "a7672e.h"
+#include "cacert.h"
+
+/* Per-device id, password and SIM settings: not in git (see the .example) */
+#if __has_include("device_config.h")
+#include "device_config.h"
+#else
+#error "Copy Core/Inc/device_config.h.example to device_config.h and fill it in"
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -34,6 +42,21 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+/* Broker: mqtt.nodewave.dev, TLS. Topics: DEVICE_ID/up/... (device -> server)
+ * and DEVICE_ID/down/... (server -> device); see BUILDING.md in the mqtt repo */
+#define MQTT_BROKER         "mqtt.nodewave.dev"
+#define MQTT_PORT           8883
+
+#define TOPIC_STATUS        DEVICE_ID "/up/status"
+#define TOPIC_DATA          DEVICE_ID "/up/data"
+#define TOPIC_DOWN          DEVICE_ID "/down/#"
+#define TOPIC_CMD           DEVICE_ID "/down/cmd"
+
+/* Reconnect back-off: the broker blocks an IP that opens more than 20
+ * connections a minute, so never retry in a tight loop */
+#define RECONNECT_MIN_MS    2000u
+#define RECONNECT_MAX_MS    60000u
 
 /* USER CODE END PD */
 
@@ -80,7 +103,12 @@ static void on_mqtt_message(const char *topic, const char *payload,
     printf("[MQTT RX] payload (%u B): %.*s\r\n",
            (unsigned)payload_len, (int)payload_len, payload);
 
-    /* ── Command dispatch on device/commands ─────────────────────────── *
+    /* Only <id>/down/cmd drives outputs; other down/ topics (cfg, ...) are
+     * ignored until handled, so a new topic can never toggle a pin. */
+    if (strcmp(topic, TOPIC_CMD) != 0)
+        return;
+
+    /* ── Command dispatch on <id>/down/cmd ───────────────────────────── *
      * Expected JSON:  {"cmd":"output0","val":1}                          *
      * Extend this section to handle your downlink commands.              */
     if (strstr(payload, "\"output0\"")) {
@@ -112,7 +140,47 @@ static void on_mqtt_lost(void)
     g_mqtt_reconnect = 1;
 }
 
-/* ── Custom hex payloads cycled to a7672/data every 60 s ────────────── */
+static const A7672E_MqttConfig_t g_mqtt_cfg = {
+    .broker       = MQTT_BROKER,
+    .port         = MQTT_PORT,
+    .client_id    = DEVICE_ID,
+    .username     = DEVICE_ID,
+    .password     = MQTT_PASSWORD,
+    .use_ssl      = 1,
+    .will_topic   = TOPIC_STATUS,
+    .will_payload = "offline",
+    .will_qos     = 1,
+};
+
+/* Connect, announce online and subscribe to everything under <id>/down/ */
+static A7672E_Status_t mqtt_start(void)
+{
+    if (A7672E_MqttConnect(&g_mqtt_cfg) != A7672E_OK)
+        return A7672E_ERR;
+    /* Not retained: the modem's last will cannot be retained, so a retained
+     * "online" would outlive the device */
+    A7672E_MqttPublish(TOPIC_STATUS, "online", 1, 0);
+    if (A7672E_MqttSubscribe(TOPIC_DOWN, 1) != A7672E_OK) {
+        printf("[MQTT] subscribe to %s failed\r\n", TOPIC_DOWN);
+        return A7672E_ERR;
+    }
+    printf("[MQTT] subscribed to %s\r\n", TOPIC_DOWN);
+    return A7672E_OK;
+}
+
+/* Retry mqtt_start() with doubling delay until it succeeds */
+static void mqtt_start_with_backoff(void)
+{
+    uint32_t delay = RECONNECT_MIN_MS;
+    while (mqtt_start() != A7672E_OK) {
+        printf("[MQTT] connect failed, retrying in %lu s\r\n",
+               (unsigned long)(delay / 1000u));
+        HAL_Delay(delay);
+        delay = (delay * 2u > RECONNECT_MAX_MS) ? RECONNECT_MAX_MS : delay * 2u;
+    }
+}
+
+/* ── Custom hex payloads cycled to <id>/up/data every 60 s ────────── */
 static const char * const g_payloads[] = {
     "68250100103254769881239025012b140000002b50000000000000000004ddccbbaa502800005523270426200000b916",
     "68250100103254769881239025022b280000002b3c000000000000000004ddccbbaa2029000025002704262000003816",
@@ -173,26 +241,7 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  /* ── Broker: remote Mosquitto (plain TCP 1883) ────────────────────── */
-  static const A7672E_MqttConfig_t mqtt_cfg = {
-      .broker    = "157.173.107.18",
-      .port      = 1883,
-      .client_id = "A7672Client",
-      .username  = "admin",
-      .password  = "mugiendii",
-      .use_ssl   = 0,
-  };
-
-  /* Network configuration — from your ESP32 implementation */
-  static const char *A7672E_PIN = "3759";        /* Your Safaricom SIM PIN */
-  static const char *A7672E_APN = "safaricom";   /* Safaricom APN */
-
-  /* Topics (mirrors setup.py) */
-  #define TOPIC_STATUS        "a7672/status"
-  #define TOPIC_DATA          "a7672/data"
-  #define TOPIC_COMMANDS      "a7672/#"
-
-  printf("== A7672E LTE HAL starting ==\r\n");
+  printf("== A7672E LTE HAL starting (device %s) ==\r\n", DEVICE_ID);
 
   /* ── Initialise driver, register callbacks ──────────────────────────── */
   A7672E_Init();
@@ -211,7 +260,7 @@ int main(void)
 
   /* ── Network registration ──────────────────────────── */
   printf("Registering on network...\r\n");
-  A7672E_Status_t net_st = A7672E_InitNetwork(A7672E_PIN, A7672E_APN);
+  A7672E_Status_t net_st = A7672E_InitNetwork(SIM_PIN, SIM_APN);
   if (net_st != A7672E_OK) {
       const char *reason = (net_st == A7672E_NO_SIM) ? "no SIM / SIM removed" :
                            (net_st == A7672E_NO_NET) ? "registration timeout"  :
@@ -221,23 +270,16 @@ int main(void)
   }
   printf("Network ready\r\n");
 
-  /* ── MQTT connect ───────────────────────────────────────────────────── */
-  printf("Connecting to local Mosquitto...\r\n");
-  if (A7672E_MqttConnect(&mqtt_cfg) != A7672E_OK) {
-      printf("ERROR: MQTT connect failed\r\n");
+  /* ── TLS: root CA into the modem, bound to SSL context 0 ──────────── */
+  if (A7672E_TlsUploadCert(CACERT_PEM, CACERT_PEM_LEN) != A7672E_OK) {
+      printf("ERROR: CA certificate upload failed\r\n");
       Error_Handler();
   }
+
+  /* ── MQTT connect (retries with back-off) ───────────────────────────── */
+  printf("Connecting to %s:%d...\r\n", MQTT_BROKER, MQTT_PORT);
+  mqtt_start_with_backoff();
   printf("MQTT connected\r\n");
-
-  /* Announce online */
-  A7672E_MqttPublish(TOPIC_STATUS, "Device connected", 1, 0);
-
-  /* ── Subscribe to all a7672 topics ────────────────────────────────── */
-  if (A7672E_MqttSubscribe(TOPIC_COMMANDS, 1) != A7672E_OK) {
-      printf("ERROR: subscribe failed\r\n");
-      Error_Handler();
-  }
-  printf("Subscribed to %s\r\n", TOPIC_COMMANDS);
 
   /* USER CODE END 2 */
 
@@ -268,13 +310,10 @@ int main(void)
     if (g_mqtt_reconnect) {
         g_mqtt_reconnect = 0;
         printf("Reconnecting...\r\n");
-        if (A7672E_MqttConnect(&mqtt_cfg) == A7672E_OK) {
-            A7672E_MqttPublish(TOPIC_STATUS, "Device connected", 1, 0);
-            A7672E_MqttSubscribe(TOPIC_COMMANDS, 1);
-        }
+        mqtt_start_with_backoff();
     }
 
-    /* ── Heartbeat to a7672/status every 30 s ────────────────────── */
+    /* ── Heartbeat to <id>/up/status every 30 s ──────────────────── */
     if ((HAL_GetTick() - last_heartbeat) >= 30000u) {
         last_heartbeat = HAL_GetTick();
         char hbuf[48];
@@ -286,7 +325,7 @@ int main(void)
             printf("[HB] FAILED\r\n");
     }
 
-    /* ── Hex payload to a7672/data every 60 s (cycle through all 20) ── */
+    /* ── Hex payload to <id>/up/data every 60 s (cycle through all 20) ── */
     if ((HAL_GetTick() - last_payload) >= 60000u) {
         last_payload = HAL_GetTick();
         if (payload_index < PAYLOAD_COUNT) {

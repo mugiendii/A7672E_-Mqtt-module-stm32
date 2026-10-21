@@ -81,9 +81,10 @@ typedef struct {
     uint16_t port;              /**< TCP port (1883 plain / 8883 TLS)           */
     char     client_id[32];     /**< MQTT client identifier (must be unique)    */
     char     username[32];      /**< Broker username  (empty if not needed)     */
-    char     password[32];      /**< Broker password  (empty if not needed)     */
+    char     password[48];      /**< Broker password  (empty if not needed)     */
     uint8_t  use_ssl;           /**< 0 = plain TCP, 1 = TLS/SSL                */
-    /* Optional last-will message — set topic[0]='\0' to disable */
+    /* Optional last-will message — set topic[0]='\0' to disable.
+     * The A76xx sends it without the retain flag; will_retain is ignored. */
     char     will_topic[64];    /**< Last-will topic   (e.g. "device/status")   */
     char     will_payload[32];  /**< Last-will payload (e.g. "offline")         */
     uint8_t  will_qos;          /**< Last-will QoS (0/1/2)                      */

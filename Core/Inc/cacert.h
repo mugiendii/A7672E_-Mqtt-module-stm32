@@ -1,12 +1,16 @@
 /**
  * @file  cacert.h
- * @brief ISRG Root X1 CA certificate (PEM) for HiveMQ Cloud TLS (port 8883).
+ * @brief ISRG Root X1 CA certificate (PEM): the Let's Encrypt root that signs
+ *        mqtt.nodewave.dev (TLS port 8883). Valid until 2035-06-04.
  *
- * HiveMQ Cloud endpoints use Let's Encrypt certificates signed by
- * ISRG Root X1.  The modem's AT+CCERTDOWN command uploads this PEM to the
- * module filesystem; AT+CSSLCFG then binds it to SSL context 0.
+ * Only the root goes on the device, never the server certificate: the server
+ * certificate renews every ~60 days and the device must not care.
+ * AT+CCERTDOWN uploads this PEM to the modem filesystem; AT+CSSLCFG then
+ * binds it to SSL context 0.
  *
- * Source: https://letsencrypt.org/certs/isrgrootx1.pem  (self-signed root)
+ * Source: https://letsencrypt.org/certs/isrgrootx1.pem
+ * SHA-256 fingerprint:
+ *   96:BC:EC:06:26:49:76:F3:74:60:77:9A:CF:28:C5:A7:CF:E8:A3:C0:AA:E1:1A:8F:FC:EE:05:C0:BD:DF:08:C6
  */
 
 #ifndef CACERT_H
@@ -20,7 +24,7 @@ static const char CACERT_PEM[] =
     "cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4\r\n"
     "WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu\r\n"
     "ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY\r\n"
-    "MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoBggIBAK3oJHP0FDfzm54rVygc\r\n"
+    "MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc\r\n"
     "h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+\r\n"
     "0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U\r\n"
     "A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW\r\n"
